@@ -13,6 +13,15 @@ TMP_RAW="/tmp/sub_raw.txt"
 # Podkop service
 PODKOP_SERVICE="/etc/init.d/podkop"
 
+# Check if podkop is configured for urltest mode
+PROXY_CONFIG_TYPE=$(uci get podkop.@section[0].proxy_config_type 2>/dev/null)
+
+if [ "$PROXY_CONFIG_TYPE" != "urltest" ]; then
+    echo "Error: podkop proxy_config_type is not set to 'urltest' (current value: '$PROXY_CONFIG_TYPE')"
+    echo "Please configure podkop to use urltest mode before running this script"
+    exit 1
+fi
+
 # Check if file exists
 if [ ! -f "$SUB_FILE" ]; then
     echo "File $SUB_FILE not found"

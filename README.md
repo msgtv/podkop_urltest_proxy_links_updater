@@ -62,13 +62,25 @@ The install script accepts cron parameters after the subscription file path:
 
 - `subscription_file` - Path to file containing subscription URL (default: `sub_link`)
 
+### Prerequisites
+
+Before running the script, ensure Podkop is configured in **urltest mode**:
+
+```sh
+uci set podkop.@section[0].proxy_config_type='urltest'
+uci commit podkop
+```
+
+The script will exit with an error if `proxy_config_type` is not set to `urltest`.
+
 ### How It Works
 
-1. Reads subscription URL from the specified file
-2. Downloads proxy configurations using `wget`
-3. Compares new configuration with current Podkop settings
-4. Updates `urltest_proxy_links` in Podkop configuration if changed
-5. Restarts Podkop service only when changes are detected
+1. Validates that Podkop is configured in `urltest` mode (`proxy_config_type`)
+2. Reads subscription URL from the specified file
+3. Downloads proxy configurations using `wget`
+4. Compares new configuration with current Podkop settings
+5. Updates `urltest_proxy_links` in Podkop configuration if changed
+6. Restarts Podkop service only when changes are detected
 
 ## Files
 
@@ -92,6 +104,20 @@ The `install.sh` script performs the following actions:
 The updater modifies Podkop's UCI configuration:
 - Section: `@section[0]`
 - Option: `urltest_proxy_links`
+
+### Required Podkop Settings
+
+The script requires the following Podkop configuration:
+
+| Option | Required Value | Description |
+|--------|----------------|-------------|
+| `proxy_config_type` | `urltest` | Must be set to `urltest` mode |
+| `urltest_proxy_links` | *auto-populated* | Proxy URLs for testing (updated by this script) |
+
+To check your current configuration:
+```sh
+uci get podkop.@section[0].proxy_config_type
+```
 
 ## License
 
