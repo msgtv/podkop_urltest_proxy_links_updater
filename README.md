@@ -18,26 +18,38 @@ Automatic subscription link updater for Podkop on OpenWrt routers. This tool dow
 
 ## Installation
 
-1. Clone or copy the scripts to your OpenWrt router
-2. Create a `sub_link` file containing your subscription URL:
-   ```
-   https://your-subscription-provider.com/api/subscribe?token=xxx
-   ```
-3. Run the install script:
+### Quick Start
+
+1. **Create a subscription file** with your proxy subscription URL:
    ```sh
-   ./install.sh
+   echo "https://your-subscription-provider.com/api/subscribe?token=xxx" > /root/sub_link
+   ```
+
+2. **Download the install script**:
+   ```sh
+   wget https://raw.githubusercontent.com/itdoginfo/podkop/refs/heads/main/install.sh
+   ```
+
+3. **Make it executable**:
+   ```sh
+   chmod a+x ./install.sh
+   ```
+
+4. **Run the installer** with your subscription file path:
+   ```sh
+   ./install.sh /root/sub_link
    ```
 
 ### Custom Schedule
 
-The install script accepts cron parameters for custom scheduling:
+The install script accepts cron parameters after the subscription file path:
 
 ```sh
-./install.sh                    # every 12 hours (default)
-./install.sh 0 */6 * * *        # every 6 hours
-./install.sh 0 3 * * *          # every day at 3:00
-./install.sh 0 0 * * 0          # every Sunday at 00:00
-./install.sh 30 */4 * * *       # every 4 hours at :30
+./install.sh /root/sub_link                    # every 12 hours (default)
+./install.sh /root/sub_link 0 */6 * * *        # every 6 hours
+./install.sh /root/sub_link 0 3 * * *          # every day at 3:00
+./install.sh /root/sub_link 0 0 * * 0          # every Sunday at 00:00
+./install.sh /root/sub_link 30 */4 * * *       # every 4 hours at :30
 ```
 
 ## Usage
@@ -62,9 +74,18 @@ The install script accepts cron parameters for custom scheduling:
 
 | File | Description |
 |------|-------------|
-| `urltest_proxy_links_updater.sh` | Main updater script |
+| `urltest_proxy_links_updater.sh` | Main updater script (downloaded automatically) |
 | `install.sh` | Installation script for crontab setup |
 | `sub_link` | File containing subscription URL (create this) |
+
+## Installation Details
+
+The `install.sh` script performs the following actions:
+
+1. Copies your subscription file to `/etc/podkop_urltest_proxy_links_updater/sub_link`
+2. Downloads the latest `urltest_proxy_links_updater.sh` from GitHub to `/opt/podkop_urltest_proxy_links_updater/`
+3. Adds a cron job for automatic updates
+4. The updater script runs on schedule and updates Podkop configuration when subscription changes
 
 ## Configuration
 
