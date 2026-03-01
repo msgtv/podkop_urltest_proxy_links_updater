@@ -1,7 +1,7 @@
 #!/bin/sh
 
 # Script to install urltest_proxy_links_updater.sh into OpenWrt crontab
-# Default: every 12 hours (0 */12 * * *)
+# Default: every 15 minutes (*/15 * * * *)
 
 UPDATER_SCRIPT_DOWNLOAD_URL="https://raw.githubusercontent.com/msgtv/podkop_urltest_proxy_links_updater/refs/heads/main/urltest_proxy_links_updater.sh"
 
@@ -27,14 +27,14 @@ show_help() {
     echo ""
     echo "Arguments:"
     echo "  sub_link_path  Path to subscription file (required)"
-    echo "  minutes        0-59 or * (default: 0)"
-    echo "  hours          0-23, */N or * (default: */12)"
+    echo "  minutes        0-59, */N or * (default: */15)"
+    echo "  hours          0-23 or * (default: *)"
     echo "  days           1-31 or * (default: *)"
     echo "  months         1-12 or * (default: *)"
     echo "  weekdays       0-7 (0 and 7 = Sunday) or * (default: *)"
     echo ""
     echo "Examples:"
-    echo "  $0 /etc/podkop/my_sub.txt             # custom sub file, every 12 hours"
+    echo "  $0 /etc/podkop/my_sub.txt             # custom sub file, every 15 minutes"
     echo "  $0 /root/sub_link 0 */6 * * *         # custom sub file, every 6 hours"
     echo "  $0 /root/sub_link 0 3 * * *           # every day at 3:00"
     echo "  $0 /root/sub_link 0 0 * * 0           # every Sunday at 00:00"
@@ -69,8 +69,8 @@ shift
 
 # Get cron parameters from arguments or use defaults
 # Cron format: minutes hours days months weekdays
-CRON_MINUTES="${1:-0}"
-CRON_HOURS="${2:-*/12}"
+CRON_MINUTES="${1:-*/15}"
+CRON_HOURS="${2:-*}"
 CRON_DAYS="${3:-*}"
 CRON_MONTHS="${4:-*}"
 CRON_WEEKDAYS="${5:-*}"
@@ -142,7 +142,7 @@ if [ $? -eq 0 ]; then
     echo "Installation completed successfully!"
     echo ""
     echo "Usage examples:"
-    echo "  ./install.sh /etc/podkop/my_sub.txt             # custom sub file, every 12 hours"
+    echo "  ./install.sh /etc/podkop/my_sub.txt             # custom sub file, every 15 minutes"
     echo "  ./install.sh /root/sub_link 0 */6 * * *         # custom sub file, every 6 hours"
     echo "  ./install.sh /root/sub_link 0 3 * * *           # every day at 3:00"
     echo "  ./install.sh /root/sub_link 0 0 * * 0           # every Sunday at 00:00"

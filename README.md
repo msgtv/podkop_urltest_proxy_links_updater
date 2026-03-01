@@ -45,7 +45,7 @@ Automatic subscription link updater for Podkop on OpenWrt routers. This tool dow
 The install script accepts cron parameters after the subscription file path:
 
 ```sh
-./install.sh /root/sub_link                    # every 12 hours (default)
+./install.sh /root/sub_link                    # every 15 minutes (default)
 ./install.sh /root/sub_link 0 */6 * * *        # every 6 hours
 ./install.sh /root/sub_link 0 3 * * *          # every day at 3:00
 ./install.sh /root/sub_link 0 0 * * 0          # every Sunday at 00:00
