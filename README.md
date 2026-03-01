@@ -97,7 +97,8 @@ The `install.sh` script performs the following actions:
 1. Copies your subscription file to `/etc/podkop_urltest_proxy_links_updater/sub_link`
 2. Downloads the latest `urltest_proxy_links_updater.sh` from GitHub to `/opt/podkop_urltest_proxy_links_updater/`
 3. Adds a cron job for automatic updates
-4. The updater script runs on schedule and updates Podkop configuration when subscription changes
+4. **Runs the updater script immediately** to apply the subscription without waiting for the first scheduled run
+5. The updater script runs on schedule and updates Podkop configuration when subscription changes
 
 ## Configuration
 
