@@ -27,7 +27,7 @@ Automatic subscription link updater for Podkop on OpenWrt routers. This tool dow
 
 2. **Download the install script**:
    ```sh
-   wget https://raw.githubusercontent.com/itdoginfo/podkop/refs/heads/main/install.sh
+   wget https://raw.githubusercontent.com/msgtv/podkop_urltest_proxy_links_updater/refs/heads/main/install.sh
    ```
 
 3. **Make it executable**:
