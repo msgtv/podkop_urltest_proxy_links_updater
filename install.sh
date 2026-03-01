@@ -152,4 +152,11 @@ else
     exit 1
 fi
 
+echo ""
+echo "Running initial update..."
+echo "----------------------------------------"
+$UPDATER_SCRIPT "$UPDATER_SUB_LINK"
+echo "----------------------------------------"
+echo ""
+
 exit 0
