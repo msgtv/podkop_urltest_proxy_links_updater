@@ -46,6 +46,13 @@ if [ $? -ne 0 ]; then
     exit 1
 fi
 
+
+# Check if downloaded file is empty
+if [ ! -s "$TMP_RAW" ]; then
+    echo "Error: downloaded subscription file is empty"
+    exit 1
+fi
+
 COUNT=$(wc -l < $TMP_RAW)
 
 echo "Found $COUNT configs"
