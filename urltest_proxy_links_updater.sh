@@ -794,37 +794,6 @@ validate_proxy_url() {
 }
 
 # -----------------------------------------------------------------------------
-# Decode URL-encoded fragment (after #)
-# Example: %F0%9F%87%BA%F0%9F%87%B8%20%D0%A1%D0%A8%D0%90%20 -> США
-# -----------------------------------------------------------------------------
-decode_url_fragment() {
-    local url="$1"
-    local fragment decoded_fragment base_url
-
-    # Check if URL contains #
-    if echo "$url" | grep -q '#'; then
-        # Extract base URL (part before #)
-        base_url=$(echo "$url" | sed 's/#.*//')
-        
-        # Extract fragment (part after #)
-        fragment=$(echo "$url" | sed 's/^[^#]*#//')
-        
-        # Check if fragment contains URL-encoded characters (%)
-        if echo "$fragment" | grep -qE '%[0-9A-Fa-f]{2}'; then
-            # Decode URL-encoded string using printf
-            decoded_fragment=$(printf '%b' "$(echo "$fragment" | sed 's/%\([0-9A-Fa-f][0-9A-Fa-f]\)/\\x\1/g')")
-            
-            # Reconstruct URL with decoded fragment
-            printf '%s#%s\n' "$base_url" "$decoded_fragment"
-        else
-            echo "$url"
-        fi
-    else
-        echo "$url"
-    fi
-}
-
-# -----------------------------------------------------------------------------
 # Filter valid links from input
 # Reads from stdin or file argument
 # Outputs valid links to stdout
@@ -993,35 +962,79 @@ download_subscription() {
 }
 
 # -----------------------------------------------------------------------------
-# Update podkop configuration with new links
+# Update podkop configuration with new links using uci batch add_list
 # -----------------------------------------------------------------------------
 update_podkop_config() {
-    # Convert multiline file to single line (replace \n with spaces)
-    # This is required for uci which does not support multiline values
-    URLTEST_PROXY_LINKS=$(tr '\n' ' ' < $TMP_RAW)
-
-    echo "Character count in downloaded string: ${#URLTEST_PROXY_LINKS}"
-
-    # Check if result is empty after removing spaces and newlines
-    local trimmed_links
-    trimmed_links=$(echo "$URLTEST_PROXY_LINKS" | tr -d ' \t\n\r')
-
-    if [ -z "$trimmed_links" ]; then
+    # Read valid links from file
+    local links_file="$TMP_RAW"
+    
+    # Check if file is empty
+    if [ ! -s "$links_file" ]; then
         echo "Error: no valid proxy links found after filtering"
         echo "Skipping update - configuration unchanged"
         exit 1
     fi
 
     # Get current value from uci
-    CURRENT_PROXY_LINKS=$(uci get podkop.@section[0].urltest_proxy_links 2>/dev/null)
+    local current_links
+    current_links=$(uci get podkop.@section[0].urltest_proxy_links 2>/dev/null)
 
     if [ $? -ne 0 ]; then
         echo "Warning: could not get current proxy links from uci"
-        CURRENT_PROXY_LINKS=""
+        current_links=""
     fi
 
-    # Compare new and current values
-    if [ "$URLTEST_PROXY_LINKS" = "$CURRENT_PROXY_LINKS" ]; then
+    # Build uci batch commands and calculate new links hash
+    local uci_commands=""
+    local first=1
+    local line_count=0
+    local new_links_hash=""
+    
+    while IFS= read -r line || [ -n "$line" ]; do
+        # Skip empty lines
+        [ -z "$line" ] && continue
+        
+        line_count=$((line_count + 1))
+        
+        # Build hash for comparison (concatenate all links)
+        new_links_hash="${new_links_hash}${line}|"
+        
+        if [ $first -eq 1 ]; then
+            # First link uses 'set'
+            uci_commands="${uci_commands}set podkop.@section[0].urltest_proxy_links='$line'
+"
+            first=0
+        else
+            # Subsequent links use 'add_list'
+            uci_commands="${uci_commands}add_list podkop.@section[0].urltest_proxy_links='$line'
+"
+        fi
+    done < "$links_file"
+    
+    # Add commit command
+    uci_commands="${uci_commands}commit podkop"
+
+    echo "Found $line_count links to configure"
+
+    # Check if we have any links
+    if [ $line_count -eq 0 ]; then
+        echo "Error: no valid proxy links to configure"
+        exit 1
+    fi
+
+    # Build current links hash for comparison
+    local current_links_hash=""
+    if [ -n "$current_links" ]; then
+        # Convert space-separated to pipe-separated for consistent comparison
+        current_links_hash=$(echo "$current_links" | tr ' ' '\n' | grep -v '^$' | sort | tr '\n' '|' | sed 's/|$//')
+    fi
+    
+    # Sort new links for comparison
+    local new_links_sorted
+    new_links_sorted=$(echo "$new_links_hash" | tr '|' '\n' | grep -v '^$' | sort | tr '\n' '|' | sed 's/|$//')
+
+    # Compare hashes (content check)
+    if [ "$current_links_hash" = "$new_links_sorted" ]; then
         echo "No changes detected - subscription links are identical"
         echo "Skipping update and restart"
         exit 0
@@ -1029,8 +1042,8 @@ update_podkop_config() {
 
     echo "Changes detected - updating podkop configuration..."
 
-    # Set urltest_proxy_links value in podkop configuration
-    uci set podkop.@section[0].urltest_proxy_links="$URLTEST_PROXY_LINKS"
+    # Execute uci batch commands
+    echo "$uci_commands" | uci batch
 
     # Check if configuration was applied successfully
     if [ $? -eq 0 ]; then
