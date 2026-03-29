@@ -794,6 +794,37 @@ validate_proxy_url() {
 }
 
 # -----------------------------------------------------------------------------
+# Decode URL-encoded fragment (after #)
+# Example: %F0%9F%87%BA%F0%9F%87%B8%20%D0%A1%D0%A8%D0%90%20 -> США
+# -----------------------------------------------------------------------------
+decode_url_fragment() {
+    local url="$1"
+    local fragment decoded_fragment base_url
+
+    # Check if URL contains #
+    if echo "$url" | grep -q '#'; then
+        # Extract base URL (part before #)
+        base_url=$(echo "$url" | sed 's/#.*//')
+        
+        # Extract fragment (part after #)
+        fragment=$(echo "$url" | sed 's/^[^#]*#//')
+        
+        # Check if fragment contains URL-encoded characters (%)
+        if echo "$fragment" | grep -qE '%[0-9A-Fa-f]{2}'; then
+            # Decode URL-encoded string using printf
+            decoded_fragment=$(printf '%b' "$(echo "$fragment" | sed 's/%\([0-9A-Fa-f][0-9A-Fa-f]\)/\\x\1/g')")
+            
+            # Reconstruct URL with decoded fragment
+            printf '%s#%s\n' "$base_url" "$decoded_fragment"
+        else
+            echo "$url"
+        fi
+    else
+        echo "$url"
+    fi
+}
+
+# -----------------------------------------------------------------------------
 # Filter valid links from input
 # Reads from stdin or file argument
 # Outputs valid links to stdout
@@ -807,33 +838,33 @@ filter_valid_links() {
     local valid=0
     local invalid=0
     local ret
-    
+
     echo "Validating proxy URLs..." >&2
-    
+
     # Clear valid links file
     : > "$TMP_VALID"
-    
+
     # Read from file or stdin
     if [ -n "$input_file" ] && [ -f "$input_file" ]; then
         while IFS= read -r line || [ -n "$line" ]; do
             total=$((total + 1))
-            
+
             # Trim whitespace
             line=$(echo "$line" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
-            
+
             # Skip empty lines
             if [ -z "$line" ]; then
                 total=$((total - 1))
                 continue
             fi
-            
+
             # Skip comment lines
             if echo "$line" | grep -qE '^#'; then
                 invalid=$((invalid + 1))
                 echo "[INVALID] $line - comment line" >&2
                 continue
             fi
-            
+
             # Validate URL (capture stderr, check exit code)
             error_msg=$(validate_proxy_url "$line" 2>&1)
             ret=$?
@@ -849,23 +880,23 @@ filter_valid_links() {
     else
         while IFS= read -r line || [ -n "$line" ]; do
             total=$((total + 1))
-            
+
             # Trim whitespace
             line=$(echo "$line" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
-            
+
             # Skip empty lines
             if [ -z "$line" ]; then
                 total=$((total - 1))
                 continue
             fi
-            
+
             # Skip comment lines
             if echo "$line" | grep -qE '^#'; then
                 invalid=$((invalid + 1))
                 echo "[INVALID] $line - comment line" >&2
                 continue
             fi
-            
+
             # Validate URL (capture stderr, check exit code)
             error_msg=$(validate_proxy_url "$line" 2>&1)
             ret=$?
