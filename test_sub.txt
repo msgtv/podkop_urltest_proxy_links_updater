@@ -1,0 +1,59 @@
+# Test subscription file for urltest_proxy_links_updater.sh
+# Contains valid and invalid proxy URLs for testing
+
+# Valid Shadowsocks URLs
+ss://YWVzLTI1Ni1nY206cGFzc3dvcmQ@192.168.1.1:8388
+ss://YWVzLTI1Ni1nY206cGFzc3dvcmQ@example.com:443
+
+# Valid VLESS URLs
+vless://55555555-5555-5555-5555-555555555555@example.com:443?encryption=none&security=tls&type=tcp
+vless://55555555-5555-5555-5555-555555555555@192.168.1.1:8443?encryption=none&security=reality&type=tcp&pbk=publickey&fp=chrome
+
+# Valid Trojan URLs
+trojan://password123@example.com:443
+trojan://mypass@192.168.1.100:8080
+
+# Valid SOCKS URLs
+socks5://192.168.1.1:1080
+socks4://proxy.example.com:9050
+socks4a://10.0.0.1:1080
+
+# Valid Hysteria2 URLs
+hysteria2://password@example.com:443
+hy2://mypass@192.168.1.1:8443?insecure=1&obfs=none
+hysteria2://pass@host.com:443?obfs=salamander&obfs-password=secret
+
+# Invalid URLs (should be filtered out)
+http://example.com:8080
+https://proxy.example.com
+ss://invalid-no-port
+ss://user:pass@256.1.1.1:8080
+ss://user:pass@01.1.1.1:8080
+vless://no-uuid@example.com
+vless://uuid@host:noport
+trojan://no-at-symbol:443
+socks5://no-port
+hysteria2://no-at:443
+invalid-scheme://example.com:8080
+
+# Empty lines and whitespace
+
+
+
+# Comments should be filtered
+
+# Invalid VLESS with empty fp (should be rejected)
+vless://81cf2fe4-38ad-4d4d-b735-71eb482bda36@51.250.20.135:7443?security=reality&type=tcp&headerType=none&path=&host=&flow=xtls-rprx-vision&sni=ads.x5.ru&fp=&pbk=publickey123
+
+# Invalid VLESS with empty pbk (should be rejected)
+vless://81cf2fe4-38ad-4d4d-b735-71eb482bda36@51.250.20.135:7443?security=reality&type=tcp&fp=chrome&pbk=
+
+# Invalid Hysteria2 with empty obfs-password (should be rejected)
+hysteria2://pass@host.com:443?obfs=salamander&obfs-password=
+
+# Invalid Hysteria2 with empty sni (should be rejected)
+hysteria2://pass@host.com:443?sni=
+
+# Invalid Hysteria2 with sni= followed by other params (should be rejected)
+hysteria2://pass@host.com:443?sni=&insecure=1
+
