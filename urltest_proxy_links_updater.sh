@@ -823,12 +823,11 @@ should_filter_by_name() {
 
 # -----------------------------------------------------------------------------
 # Filter valid links from input
-# Reads from stdin or file argument
+# Reads from stdin
 # Outputs valid links to stdout
 # Outputs logs and statistics to stderr
 # -----------------------------------------------------------------------------
 filter_valid_links() {
-    local input_file="$1"
     local line
     local error_msg
     local total=0
@@ -842,85 +841,44 @@ filter_valid_links() {
     # Clear valid links file
     : > "$TMP_VALID"
 
-    # Read from file or stdin
-    if [ -n "$input_file" ] && [ -f "$input_file" ]; then
-        while IFS= read -r line || [ -n "$line" ]; do
-            total=$((total + 1))
+    while IFS= read -r line || [ -n "$line" ]; do
+        total=$((total + 1))
 
-            # Trim whitespace
-            line=$(echo "$line" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+        # Trim whitespace
+        line=$(echo "$line" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
 
-            # Skip empty lines
-            if [ -z "$line" ]; then
-                total=$((total - 1))
-                continue
-            fi
+        # Skip empty lines
+        if [ -z "$line" ]; then
+            total=$((total - 1))
+            continue
+        fi
 
-            # Skip comment lines
-            if echo "$line" | grep -qE '^#'; then
-                invalid=$((invalid + 1))
-                echo "[INVALID] $line - comment line" >&2
-                continue
-            fi
+        # Skip comment lines
+        if echo "$line" | grep -qE '^#'; then
+            invalid=$((invalid + 1))
+            echo "[INVALID] $line - comment line" >&2
+            continue
+        fi
 
-            # Validate URL (capture stderr, check exit code)
-            error_msg=$(validate_proxy_url "$line" 2>&1)
-            ret=$?
-            if [ $ret -eq 0 ]; then
-                # Check if config name should be filtered
-                if should_filter_by_name "$line"; then
-                    filtered_by_name=$((filtered_by_name + 1))
-                    echo "[FILTERED] $line - name contains '$FILTER_NAME_PATTERN'" >&2
-                else
-                    echo "$line" >> "$TMP_VALID"
-                    echo "[VALID] $line" >&2
-                    valid=$((valid + 1))
-                fi
+        # Validate URL (capture stderr, check exit code)
+        error_msg=$(validate_proxy_url "$line" 2>&1)
+        ret=$?
+        if [ $ret -eq 0 ]; then
+            # Check if config name should be filtered
+            if should_filter_by_name "$line"; then
+                filtered_by_name=$((filtered_by_name + 1))
+                echo "[FILTERED] $line - name contains '$FILTER_NAME_PATTERN'" >&2
             else
-                invalid=$((invalid + 1))
-                echo "[INVALID] $line - $error_msg" >&2
+                echo "$line" >> "$TMP_VALID"
+                echo "[VALID] $line" >&2
+                valid=$((valid + 1))
             fi
-        done < "$input_file"
-    else
-        while IFS= read -r line || [ -n "$line" ]; do
-            total=$((total + 1))
+        else
+            invalid=$((invalid + 1))
+            echo "[INVALID] $line - $error_msg" >&2
+        fi
+    done
 
-            # Trim whitespace
-            line=$(echo "$line" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
-
-            # Skip empty lines
-            if [ -z "$line" ]; then
-                total=$((total - 1))
-                continue
-            fi
-
-            # Skip comment lines
-            if echo "$line" | grep -qE '^#'; then
-                invalid=$((invalid + 1))
-                echo "[INVALID] $line - comment line" >&2
-                continue
-            fi
-
-            # Validate URL (capture stderr, check exit code)
-            error_msg=$(validate_proxy_url "$line" 2>&1)
-            ret=$?
-            if [ $ret -eq 0 ]; then
-                # Check if config name should be filtered
-                if should_filter_by_name "$line"; then
-                    filtered_by_name=$((filtered_by_name + 1))
-                    echo "[FILTERED] $line - name contains '$FILTER_NAME_PATTERN'" >&2
-                else
-                    echo "$line" >> "$TMP_VALID"
-                    echo "[VALID] $line" >&2
-                    valid=$((valid + 1))
-                fi
-            else
-                invalid=$((invalid + 1))
-                echo "[INVALID] $line - $error_msg" >&2
-            fi
-        done
-    fi
-    
     # Update global counters
     VALID_COUNT=$valid
     INVALID_COUNT=$invalid
@@ -928,7 +886,7 @@ filter_valid_links() {
     # Output statistics
     echo "[STATS] Total: $total, Valid: $valid, Filtered: $filtered_by_name, Invalid: $invalid" >&2
     echo "Filtered valid links saved to $TMP_VALID" >&2
-    
+
     # Output valid links to stdout
     cat "$TMP_VALID"
 }
