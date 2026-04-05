@@ -17,6 +17,9 @@ SUB_FILE="sub_link"
 VALID_COUNT=0
 INVALID_COUNT=0
 
+# Filter pattern for config names (case-insensitive)
+FILTER_NAME_PATTERN="LTE"
+
 # -----------------------------------------------------------------------------
 # Show help message
 # -----------------------------------------------------------------------------
@@ -794,6 +797,31 @@ validate_proxy_url() {
 }
 
 # -----------------------------------------------------------------------------
+# Check if config name contains the filter pattern (case-insensitive)
+# Arguments: $1 - full URL
+# Returns: 0 if should be filtered out, 1 if should be kept
+# -----------------------------------------------------------------------------
+should_filter_by_name() {
+    local url="$1"
+    local name
+
+    # Extract name (everything after #)
+    if ! echo "$url" | grep -q '#'; then
+        # No name present, don't filter
+        return 1
+    fi
+
+    name=$(echo "$url" | sed 's/^[^#]*#//')
+
+    # Check if name contains the filter pattern (case-insensitive)
+    if echo "$name" | grep -qi "$FILTER_NAME_PATTERN"; then
+        return 0
+    fi
+
+    return 1
+}
+
+# -----------------------------------------------------------------------------
 # Filter valid links from input
 # Reads from stdin or file argument
 # Outputs valid links to stdout
@@ -806,6 +834,7 @@ filter_valid_links() {
     local total=0
     local valid=0
     local invalid=0
+    local filtered_by_name=0
     local ret
 
     echo "Validating proxy URLs..." >&2
@@ -838,9 +867,15 @@ filter_valid_links() {
             error_msg=$(validate_proxy_url "$line" 2>&1)
             ret=$?
             if [ $ret -eq 0 ]; then
-                echo "$line" >> "$TMP_VALID"
-                echo "[VALID] $line" >&2
-                valid=$((valid + 1))
+                # Check if config name should be filtered
+                if should_filter_by_name "$line"; then
+                    filtered_by_name=$((filtered_by_name + 1))
+                    echo "[FILTERED] $line - name contains '$FILTER_NAME_PATTERN'" >&2
+                else
+                    echo "$line" >> "$TMP_VALID"
+                    echo "[VALID] $line" >&2
+                    valid=$((valid + 1))
+                fi
             else
                 invalid=$((invalid + 1))
                 echo "[INVALID] $line - $error_msg" >&2
@@ -870,9 +905,15 @@ filter_valid_links() {
             error_msg=$(validate_proxy_url "$line" 2>&1)
             ret=$?
             if [ $ret -eq 0 ]; then
-                echo "$line" >> "$TMP_VALID"
-                echo "[VALID] $line" >&2
-                valid=$((valid + 1))
+                # Check if config name should be filtered
+                if should_filter_by_name "$line"; then
+                    filtered_by_name=$((filtered_by_name + 1))
+                    echo "[FILTERED] $line - name contains '$FILTER_NAME_PATTERN'" >&2
+                else
+                    echo "$line" >> "$TMP_VALID"
+                    echo "[VALID] $line" >&2
+                    valid=$((valid + 1))
+                fi
             else
                 invalid=$((invalid + 1))
                 echo "[INVALID] $line - $error_msg" >&2
@@ -883,9 +924,9 @@ filter_valid_links() {
     # Update global counters
     VALID_COUNT=$valid
     INVALID_COUNT=$invalid
-    
+
     # Output statistics
-    echo "[STATS] Total: $total, Valid: $valid, Invalid: $invalid" >&2
+    echo "[STATS] Total: $total, Valid: $valid, Filtered: $filtered_by_name, Invalid: $invalid" >&2
     echo "Filtered valid links saved to $TMP_VALID" >&2
     
     # Output valid links to stdout
