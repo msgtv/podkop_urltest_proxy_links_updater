@@ -432,7 +432,7 @@ validate_vless_url() {
         local vtype
         vtype=$(echo "$query" | sed 's|.*type=\([^&#]*\).*|\1|')
         case "$vtype" in
-            tcp|raw|udp|grpc|http|httpupgrade|xhttp|ws|kcp) ;;
+            tcp|raw|udp|grpc|http|httpupgrade|ws|kcp) ;;
             *)
                 echo "Invalid VLESS URL: unsupported type=$vtype" >&2
                 return 1
