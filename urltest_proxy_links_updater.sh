@@ -430,7 +430,7 @@ validate_vless_url() {
     # Check for supported type parameter
     if echo "$query" | grep -qE 'type='; then
         local vtype
-        vtype=$(echo "$query" | sed 's|.*type=\([^&]*\).*|\1|')
+        vtype=$(echo "$query" | sed 's|.*type=\([^&#]*\).*|\1|')
         case "$vtype" in
             tcp|raw|udp|grpc|http|httpupgrade|xhttp|ws|kcp) ;;
             *)
@@ -443,7 +443,7 @@ validate_vless_url() {
     # Check for supported security parameter
     if echo "$query" | grep -qE 'security='; then
         local security
-        security=$(echo "$query" | sed 's|.*security=\([^&]*\).*|\1|')
+        security=$(echo "$query" | sed 's|.*security=\([^&#]*\).*|\1|')
         case "$security" in
             tls|reality|none) ;;
             *)
@@ -707,7 +707,7 @@ validate_hysteria2_url() {
         # Check insecure parameter (must be 0 or 1)
         if echo "$query" | grep -qE 'insecure='; then
             local insecure
-            insecure=$(echo "$query" | sed 's|.*insecure=\([^&]*\).*|\1|')
+            insecure=$(echo "$query" | sed 's|.*insecure=\([^&#]*\).*|\1|')
             if [ "$insecure" != "0" ] && [ "$insecure" != "1" ]; then
                 echo "Invalid Hysteria2 URL: insecure must be 0 or 1" >&2
                 return 1
@@ -717,7 +717,7 @@ validate_hysteria2_url() {
         # Check obfs parameter
         if echo "$query" | grep -qE 'obfs='; then
             local obfs
-            obfs=$(echo "$query" | sed 's|.*obfs=\([^&]*\).*|\1|')
+            obfs=$(echo "$query" | sed 's|.*obfs=\([^&#]*\).*|\1|')
             case "$obfs" in
                 none|salamander) ;;
                 *)
