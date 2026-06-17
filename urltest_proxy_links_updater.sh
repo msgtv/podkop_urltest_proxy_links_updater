@@ -21,12 +21,39 @@ INVALID_COUNT=0
 FILTER_NAME_PATTERN="LTE"
 
 # -----------------------------------------------------------------------------
+# sing-box health check settings
+# -----------------------------------------------------------------------------
+# Path to the sing-box config generated/used by podkop.
+# Set to empty string to skip config-file validation step.
+SINGBOX_CONFIG_PATH="/etc/sing-box/config.json"
+# URL used for the connectivity probe. Should be a lightweight endpoint
+# that returns 2xx and is reachable through the proxy.
+SINGBOX_CHECK_URL="https://www.gstatic.com/generate_204"
+# Timeout (seconds) for the connectivity probe.
+SINGBOX_CHECK_TIMEOUT="10"
+# Optional explicit proxy for the probe, e.g. "http://127.0.0.1:1080"
+# or "socks5://127.0.0.1:1080". Leave empty to AUTO-DETECT from the
+# sing-box config file: the script parses inbounds and picks:
+#   - tun inbound    → direct request (TUN routes traffic transparently)
+#   - http/mixed     → http://127.0.0.1:<listen_port>
+#   - socks          → socks5://127.0.0.1:<listen_port>
+# Priority: tun > http/mixed > socks.
+# Set this variable to a non-empty value to override auto-detection.
+SINGBOX_CHECK_PROXY=""
+# Set to 1 via --force to skip the sing-box health check entirely.
+SKIP_SINGBOX_CHECK=0
+
+# -----------------------------------------------------------------------------
 # Show help message
 # -----------------------------------------------------------------------------
 show_help() {
-    echo "Usage: $0 [subscription_file]"
+    echo "Usage: $0 [options] [subscription_file]"
     echo ""
     echo "Downloads subscription links and updates podkop urltest configuration."
+    echo ""
+    echo "Before downloading, the script checks whether the current sing-box"
+    echo "instance is healthy (process up, config valid, connectivity OK)."
+    echo "If sing-box is healthy, the script exits without downloading anything."
     echo ""
     echo "Arguments:"
     echo "  subscription_file    Path to file containing subscription URL"
@@ -34,10 +61,13 @@ show_help() {
     echo ""
     echo "Options:"
     echo "  -h, --help           Show this help message and exit"
+    echo "  -f, --force          Skip the sing-box health check and always"
+    echo "                       download / update configs"
     echo ""
     echo "Example:"
     echo "  $0                   Use default subscription file 'sub_link'"
     echo "  $0 custom_url.txt    Use custom subscription file"
+    echo "  $0 --force           Skip sing-box check, force re-download"
 }
 
 # -----------------------------------------------------------------------------
@@ -58,6 +88,225 @@ check_prerequisites() {
         echo "Please configure podkop to use urltest mode before running this script"
         exit 1
     fi
+}
+
+# -----------------------------------------------------------------------------
+# Auto-detect a probe proxy URL from the sing-box config file.
+# Reads the "inbounds" array of $SINGBOX_CONFIG_PATH and selects:
+#   - http/mixed inbound → http://<listen>:<listen_port>
+#   - socks inbound      → socks5://<listen>:<listen_port>
+#   - tun/tproxy inbound → empty string (direct request, transparent mode)
+# Priority: http/mixed > socks > tun/tproxy (direct).
+# The mixed/http inbound is preferred because it provides an explicit,
+# reliable path that does not depend on iptables/nftables rules being
+# in place (which tun/tproxy do).
+# Outputs the chosen URL (or empty string for direct mode) on stdout.
+# Returns: 0 if a decision was made, 1 if config could not be parsed
+#          or no usable inbound was found.
+# -----------------------------------------------------------------------------
+detect_singbox_check_proxy() {
+    local config="$SINGBOX_CONFIG_PATH"
+
+    # Need a config file to inspect
+    if [ -z "$config" ] || [ ! -f "$config" ]; then
+        return 1
+    fi
+
+    # jshn is shipped with libubox (a hard dependency of podkop / OpenWrt base)
+    # Allow override of the shim path for testing.
+    local jshn_path="${JSHN_SH:-/usr/share/libubox/jshn.sh}"
+    if [ ! -f "$jshn_path" ]; then
+        echo "[WARN] jshn.sh not found ($jshn_path) — cannot parse $config" >&2
+        return 1
+    fi
+    . "$jshn_path"
+
+    if ! json_load "$(cat "$config")" 2>/dev/null; then
+        echo "[WARN] failed to parse $config as JSON" >&2
+        json_cleanup 2>/dev/null
+        return 1
+    fi
+
+    # "inbounds" must exist and be an array
+    if ! json_is_a "inbounds" array 2>/dev/null; then
+        echo "[WARN] no 'inbounds' array in $config" >&2
+        json_cleanup
+        return 1
+    fi
+
+    json_select "inbounds" 2>/dev/null || {
+        json_cleanup
+        return 1
+    }
+
+    # Standard jshn idiom: get all keys (numeric indices for arrays) and
+    # iterate. This is more portable than probing json_is_a "<idx>" object
+    # in a while loop, which behaves inconsistently across jshn versions.
+    local keys
+    json_get_keys keys 2>/dev/null
+
+    local found_transparent=0
+    local found_http_proxy=""
+    local found_socks_proxy=""
+
+    local k
+    for k in $keys; do
+        if ! json_select "$k" 2>/dev/null; then
+            continue
+        fi
+
+        local itype listen lport
+        json_get_var itype "type" 2>/dev/null
+        json_get_var listen "listen" 2>/dev/null
+        json_get_var lport "listen_port" 2>/dev/null
+
+        # Normalize listen address
+        [ -z "$listen" ] && listen="127.0.0.1"
+        case "$listen" in
+            0.0.0.0|::|\[::\]|"::1") listen="127.0.0.1" ;;
+        esac
+        # Bracket IPv6 addresses for use in URLs
+        case "$listen" in
+            *:*) listen="[$listen]" ;;
+        esac
+
+        case "$itype" in
+            tun|tproxy)
+                # Transparent modes: rely on kernel-level traffic interception
+                # (tun interface or tproxy iptables/nftables rules).
+                found_transparent=1
+                ;;
+            http|mixed)
+                # Mixed serves both HTTP and SOCKS; wget speaks HTTP, so use http://
+                [ -z "$found_http_proxy" ] && [ -n "$lport" ] && \
+                    found_http_proxy="http://${listen}:${lport}"
+                ;;
+            socks)
+                [ -z "$found_socks_proxy" ] && [ -n "$lport" ] && \
+                    found_socks_proxy="socks5://${listen}:${lport}"
+                ;;
+        esac
+
+        json_select ".." 2>/dev/null
+    done
+
+    json_select ".." 2>/dev/null
+    json_cleanup
+
+    # Priority: explicit http/mixed > socks > transparent (tun/tproxy)
+    if [ -n "$found_http_proxy" ]; then
+        echo "$found_http_proxy"
+        return 0
+    fi
+    if [ -n "$found_socks_proxy" ]; then
+        echo "$found_socks_proxy"
+        return 0
+    fi
+    if [ $found_transparent -eq 1 ]; then
+        # Empty string signals direct mode (transparent interception).
+        echo ""
+        return 0
+    fi
+
+    # No usable inbound found
+    return 1
+}
+
+# -----------------------------------------------------------------------------
+# Check whether the current sing-box instance is healthy.
+# Performs three sequential checks:
+#   1. sing-box process is running
+#   2. sing-box config file is syntactically valid (if sing-box binary
+#      and config file are available)
+#   3. connectivity probe through the proxy / TUN reaches a known endpoint
+#      (proxy URL is auto-detected from the sing-box config unless
+#       SINGBOX_CHECK_PROXY is set explicitly)
+# Returns: 0 if sing-box is considered working, 1 otherwise
+# -----------------------------------------------------------------------------
+check_singbox_working() {
+    echo "=== sing-box health check ==="
+
+    # ------------------------------------------------------------------
+    # Step 1: process check
+    # ------------------------------------------------------------------
+    local sb_pid
+    sb_pid=$(pidof sing-box 2>/dev/null)
+    if [ -z "$sb_pid" ]; then
+        echo "[FAIL] sing-box process is not running"
+        return 1
+    fi
+    echo "[OK]   sing-box process is running (PID: $sb_pid)"
+
+    # ------------------------------------------------------------------
+    # Step 2: config validation (only if binary and config are available)
+    # ------------------------------------------------------------------
+    if [ -n "$SINGBOX_CONFIG_PATH" ] && [ -f "$SINGBOX_CONFIG_PATH" ]; then
+        if command -v sing-box >/dev/null 2>&1; then
+            if ! sing-box check -c "$SINGBOX_CONFIG_PATH" >/dev/null 2>&1; then
+                echo "[FAIL] sing-box config validation failed: $SINGBOX_CONFIG_PATH"
+                return 1
+            fi
+            echo "[OK]   sing-box config is valid: $SINGBOX_CONFIG_PATH"
+        else
+            echo "[SKIP] sing-box binary not in PATH, skipping config validation"
+        fi
+    else
+        echo "[SKIP] sing-box config file not found ($SINGBOX_CONFIG_PATH), skipping validation"
+    fi
+
+    # ------------------------------------------------------------------
+    # Step 3: connectivity probe
+    # ------------------------------------------------------------------
+    # Determine probe proxy: explicit override first, otherwise auto-detect
+    # from the sing-box config file.
+    local probe_proxy="$SINGBOX_CHECK_PROXY"
+
+    if [ -z "$probe_proxy" ] && [ -n "$SINGBOX_CONFIG_PATH" ] && [ -f "$SINGBOX_CONFIG_PATH" ]; then
+        echo "Auto-detecting probe proxy from $SINGBOX_CONFIG_PATH..."
+        probe_proxy=$(detect_singbox_check_proxy)
+        if [ $? -ne 0 ]; then
+            echo "[WARN] could not auto-detect proxy from config; falling back to direct request"
+            probe_proxy=""
+        fi
+        if [ -z "$probe_proxy" ]; then
+            echo "  → direct mode (TUN inbound or no proxy inbound)"
+        else
+            echo "  → using proxy: $probe_proxy"
+        fi
+    elif [ -n "$probe_proxy" ]; then
+        echo "Using explicit SINGBOX_CHECK_PROXY: $probe_proxy"
+    else
+        echo "No config to inspect and no explicit proxy — using direct request"
+    fi
+
+    # Build wget invocation. wget is already a hard dependency of this
+    # script (used for the subscription download), so we rely on it here.
+    local probe_ok=0
+    local wget_args="-q -O /dev/null --timeout=$SINGBOX_CHECK_TIMEOUT"
+
+    if [ -n "$probe_proxy" ]; then
+        # Explicit proxy mode: export proxy env vars for this command only.
+        # wget honours http_proxy / https_proxy.
+        if http_proxy="$probe_proxy" https_proxy="$probe_proxy" \
+            wget $wget_args "$SINGBOX_CHECK_URL" >/dev/null 2>&1; then
+            probe_ok=1
+        fi
+    else
+        # Direct mode: assumes sing-box runs in TUN mode and transparently
+        # routes the request. If the request succeeds, the proxy chain works.
+        if wget $wget_args "$SINGBOX_CHECK_URL" >/dev/null 2>&1; then
+            probe_ok=1
+        fi
+    fi
+
+    if [ $probe_ok -ne 1 ]; then
+        echo "[FAIL] connectivity probe to $SINGBOX_CHECK_URL failed"
+        echo "       (timeout=${SINGBOX_CHECK_TIMEOUT}s, proxy='${probe_proxy:-direct}')"
+        return 1
+    fi
+    echo "[OK]   connectivity probe to $SINGBOX_CHECK_URL succeeded"
+    echo "=== sing-box is healthy ==="
+    return 0
 }
 
 # -----------------------------------------------------------------------------
@@ -1065,6 +1314,19 @@ main() {
                 show_help
                 exit 0
                 ;;
+            -f|--force)
+                SKIP_SINGBOX_CHECK=1
+                echo "sing-box health check will be skipped (--force)"
+                ;;
+            --)
+                shift
+                break
+                ;;
+            -*)
+                echo "Error: unknown option '$1'"
+                echo "Run '$0 --help' for usage"
+                exit 1
+                ;;
             *)
                 SUB_FILE="$1"
                 echo "Using file from argument: $SUB_FILE"
@@ -1082,8 +1344,25 @@ main() {
         echo "Using default file: $SUB_FILE"
     fi
 
-    # Run main workflow
+    # Run prerequisite checks (subscription file + podkop urltest mode)
     check_prerequisites
+
+    # ------------------------------------------------------------------
+    # Step 0: health-check the current sing-box instance.
+    # If it is healthy, there is nothing to do — exit successfully.
+    # ------------------------------------------------------------------
+    if [ "$SKIP_SINGBOX_CHECK" -eq 1 ]; then
+        echo "Skipping sing-box health check (SKIP_SINGBOX_CHECK=1)"
+    else
+        if check_singbox_working; then
+            echo "Current sing-box config is working — no update needed."
+            exit 0
+        fi
+        echo "sing-box is NOT healthy — proceeding with subscription update..."
+    fi
+
+    # Run main workflow: download subscription, then update podkop config
+    # (update_podkop_config itself skips restart if new links equal current)
     download_subscription
     update_podkop_config
 
