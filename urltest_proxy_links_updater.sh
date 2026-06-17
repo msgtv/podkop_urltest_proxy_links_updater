@@ -26,18 +26,23 @@ FILTER_NAME_PATTERN="LTE"
 # Path to the sing-box config generated/used by podkop.
 # Set to empty string to skip config-file validation step.
 SINGBOX_CONFIG_PATH="/etc/sing-box/config.json"
-# URL used for the connectivity probe. Should be a lightweight endpoint
-# that returns 2xx and is reachable through the proxy.
-SINGBOX_CHECK_URL="https://www.gstatic.com/generate_204"
-# Timeout (seconds) for the connectivity probe.
+# URL(s) used for the connectivity probe. Space-separated list tried in
+# order; the first successful response makes the health check pass.
+# Default: Cloudflare + Google + Microsoft connectivity-check endpoints.
+# Cloudflare is generally the most reliable from Russia/CIS networks.
+SINGBOX_CHECK_URLS="https://cp.cloudflare.com/generate_204 https://www.gstatic.com/generate_204 https://www.msftconnecttest.com/connecttest.txt"
+# Timeout (seconds) for a single connectivity probe attempt.
 SINGBOX_CHECK_TIMEOUT="10"
+# Number of retries per URL before moving on to the next URL.
+# Total worst-case probe time ≈ len(URLs) × retries × timeout.
+SINGBOX_CHECK_RETRIES="2"
 # Optional explicit proxy for the probe, e.g. "http://127.0.0.1:1080"
 # or "socks5://127.0.0.1:1080". Leave empty to AUTO-DETECT from the
 # sing-box config file: the script parses inbounds and picks:
-#   - tun inbound    → direct request (TUN routes traffic transparently)
 #   - http/mixed     → http://127.0.0.1:<listen_port>
 #   - socks          → socks5://127.0.0.1:<listen_port>
-# Priority: tun > http/mixed > socks.
+#   - tun/tproxy     → direct request (transparent mode)
+# Priority: http/mixed > socks > tun/tproxy.
 # Set this variable to a non-empty value to override auto-detection.
 SINGBOX_CHECK_PROXY=""
 # Set to 1 via --force to skip the sing-box health check entirely.
@@ -213,6 +218,97 @@ detect_singbox_check_proxy() {
 }
 
 # -----------------------------------------------------------------------------
+# Perform a single HTTP connectivity probe to a given URL.
+#
+# Why this function exists:
+#   BusyBox wget (versions ≤ 1.36) has a known bug where it returns a
+#   non-zero exit code on HTTP 204 / 200-with-empty-body responses,
+#   because it tries to read the body and times out even though the
+#   request actually succeeded. This causes false-negative health-check
+#   failures on OpenWrt routers that ship BusyBox wget.
+#
+# Strategy (in order of preference):
+#   1. curl   — handles 204 correctly, supports --proxy for both http and
+#               socks5 URLs, returns exit code 0 on any 2xx/3xx by default.
+#   2. wget   — parse the HTTP status code from the --server-response
+#               header output instead of trusting the exit code. A 2xx or
+#               3xx status line is treated as success. Works on both GNU
+#               wget and BusyBox wget (both support -S / --server-response).
+#
+# Arguments:
+#   $1 - URL to probe
+#   $2 - proxy URL (may be empty for direct request)
+#   $3 - timeout in seconds
+# Returns: 0 if the probe succeeded (2xx/3xx response), 1 otherwise
+# -----------------------------------------------------------------------------
+probe_http() {
+    local url="$1"
+    local proxy="$2"
+    local timeout="$3"
+
+    # ------------------------------------------------------------------
+    # Strategy 1: curl (preferred — works correctly with 204 + SOCKS)
+    # ------------------------------------------------------------------
+    # Use --fail-with-body to make curl return non-zero on 4xx/5xx
+    # (curl 7.76+; falls back to --fail on older versions).
+    # We also capture the HTTP code as a back-up check.
+    if command -v curl >/dev/null 2>&1; then
+        local curl_args="-s -o /dev/null --max-time ${timeout} --connect-timeout ${timeout}"
+        local curl_code
+
+        if [ -n "$proxy" ]; then
+            # curl handles http://, https://, socks5://, socks5h:// natively
+            curl_code=$(curl $curl_args -w "%{http_code}" \
+                --proxy "$proxy" "$url" 2>/dev/null) || curl_code="000"
+        else
+            curl_code=$(curl $curl_args -w "%{http_code}" \
+                "$url" 2>/dev/null) || curl_code="000"
+        fi
+
+        # Treat 2xx and 3xx as success. 3xx is included because some probe
+        # endpoints redirect (e.g., to a CDN), and that still proves
+        # connectivity.
+        case "$curl_code" in
+            2[0-9][0-9]|3[0-9][0-9]) return 0 ;;
+            *)                        return 1 ;;
+        esac
+    fi
+
+    # ------------------------------------------------------------------
+    # Strategy 2: wget + parse HTTP status from --server-response
+    # ------------------------------------------------------------------
+    # Both GNU wget and BusyBox wget support -S / --server-response,
+    # which prints the HTTP status line to stderr. We grep that line for
+    # a 2xx or 3xx status code, ignoring the (potentially bogus) exit
+    # code that BusyBox returns for empty-body responses.
+    local wget_args="-q -O /dev/null -S --timeout=${timeout}"
+    local wget_output
+
+    if [ -n "$proxy" ]; then
+        # wget honours http_proxy / https_proxy env vars.
+        # NOTE: BusyBox wget does NOT support socks5:// proxy URLs —
+        # only http://. If auto-detection picked socks5:// and curl is
+        # not available, this probe will fail; that is the user's signal
+        # to install curl (opkg install curl).
+        wget_output=$(http_proxy="$proxy" https_proxy="$proxy" \
+            wget $wget_args "$url" 2>&1)
+    else
+        wget_output=$(wget $wget_args "$url" 2>&1)
+    fi
+
+    # Look for the first HTTP status line and extract the code.
+    # Format: "  HTTP/1.1 204 No Content" (GNU) or "  HTTP/1.1 204" (BusyBox)
+    local code
+    code=$(echo "$wget_output" | awk '/HTTP\//{print $2; exit}')
+
+    # Treat 2xx and 3xx as success.
+    case "$code" in
+        2[0-9][0-9]|3[0-9][0-9]) return 0 ;;
+        *)                        return 1 ;;
+    esac
+}
+
+# -----------------------------------------------------------------------------
 # Check whether the current sing-box instance is healthy.
 # Performs three sequential checks:
 #   1. sing-box process is running
@@ -255,7 +351,7 @@ check_singbox_working() {
     fi
 
     # ------------------------------------------------------------------
-    # Step 3: connectivity probe
+    # Step 3: connectivity probe (multi-URL fallback with retries)
     # ------------------------------------------------------------------
     # Determine probe proxy: explicit override first, otherwise auto-detect
     # from the sing-box config file.
@@ -269,7 +365,7 @@ check_singbox_working() {
             probe_proxy=""
         fi
         if [ -z "$probe_proxy" ]; then
-            echo "  → direct mode (TUN inbound or no proxy inbound)"
+            echo "  → direct mode (tun/tproxy inbound or no proxy inbound)"
         else
             echo "  → using proxy: $probe_proxy"
         fi
@@ -279,32 +375,39 @@ check_singbox_working() {
         echo "No config to inspect and no explicit proxy — using direct request"
     fi
 
-    # Build wget invocation. wget is already a hard dependency of this
-    # script (used for the subscription download), so we rely on it here.
+    # Try each URL in SINGBOX_CHECK_URLS, with up to SINGBOX_CHECK_RETRIES
+    # attempts per URL. The first success makes the whole health check pass.
+    # This guards against:
+    #   - transient network blips
+    #   - one probe endpoint being temporarily blocked / rate-limited
+    #   - BusyBox wget quirks with specific response shapes
     local probe_ok=0
-    local wget_args="-q -O /dev/null --timeout=$SINGBOX_CHECK_TIMEOUT"
+    local probe_succeeded_url=""
+    local url attempt
 
-    if [ -n "$probe_proxy" ]; then
-        # Explicit proxy mode: export proxy env vars for this command only.
-        # wget honours http_proxy / https_proxy.
-        if http_proxy="$probe_proxy" https_proxy="$probe_proxy" \
-            wget $wget_args "$SINGBOX_CHECK_URL" >/dev/null 2>&1; then
-            probe_ok=1
-        fi
-    else
-        # Direct mode: assumes sing-box runs in TUN mode and transparently
-        # routes the request. If the request succeeds, the proxy chain works.
-        if wget $wget_args "$SINGBOX_CHECK_URL" >/dev/null 2>&1; then
-            probe_ok=1
-        fi
-    fi
+    for url in $SINGBOX_CHECK_URLS; do
+        for attempt in $(seq 1 "${SINGBOX_CHECK_RETRIES:-1}"); do
+            if probe_http "$url" "$probe_proxy" "$SINGBOX_CHECK_TIMEOUT"; then
+                probe_ok=1
+                probe_succeeded_url="$url"
+                break 2
+            fi
+            # Brief pause before retry (only if more attempts remain)
+            if [ "$attempt" -lt "${SINGBOX_CHECK_RETRIES:-1}" ]; then
+                sleep 1
+            fi
+        done
+    done
 
     if [ $probe_ok -ne 1 ]; then
-        echo "[FAIL] connectivity probe to $SINGBOX_CHECK_URL failed"
-        echo "       (timeout=${SINGBOX_CHECK_TIMEOUT}s, proxy='${probe_proxy:-direct}')"
+        echo "[FAIL] connectivity probe failed for all URLs:"
+        for url in $SINGBOX_CHECK_URLS; do
+            echo "         - $url"
+        done
+        echo "       (timeout=${SINGBOX_CHECK_TIMEOUT}s, retries=${SINGBOX_CHECK_RETRIES}, proxy='${probe_proxy:-direct}')"
         return 1
     fi
-    echo "[OK]   connectivity probe to $SINGBOX_CHECK_URL succeeded"
+    echo "[OK]   connectivity probe succeeded (URL: $probe_succeeded_url)"
     echo "=== sing-box is healthy ==="
     return 0
 }
