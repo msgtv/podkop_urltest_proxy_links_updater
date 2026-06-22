@@ -26,15 +26,18 @@ FILTER_NAME_PATTERN="LTE"
 # Path to the sing-box config generated/used by podkop.
 # Set to empty string to skip config-file validation step.
 SINGBOX_CONFIG_PATH="/etc/sing-box/config.json"
-# URL(s) used for the connectivity probe. Space-separated list tried in
-# order; the first successful response makes the health check pass.
-# Default: Cloudflare + Google + Microsoft connectivity-check endpoints.
-# Cloudflare is generally the most reliable from Russia/CIS networks.
-SINGBOX_CHECK_URLS="https://cp.cloudflare.com/generate_204 https://www.gstatic.com/generate_204 https://www.msftconnecttest.com/connecttest.txt"
-# Timeout (seconds) for a single connectivity probe attempt.
-SINGBOX_CHECK_TIMEOUT="10"
-# Number of retries per URL before moving on to the next URL.
-# Total worst-case probe time ≈ len(URLs) × retries × timeout.
+
+# URL used for the connectivity probe.
+# Default: https://instagram.com — a domain that is NOT reachable directly
+# from Russian/CIS ISPs, so a successful probe guarantees that traffic is
+# actually going through the proxy. (Cloudflare/gstatic generate_204 are
+# reachable directly from the WAN, which causes false positives on routers
+# where TUN/tproxy rules are not in place.)
+SINGBOX_CHECK_URL="https://instagram.com"
+# Timeout (seconds) for a single probe attempt.
+SINGBOX_CHECK_TIMEOUT="15"
+# Number of retries before declaring sing-box unhealthy.
+# Total worst-case probe time ≈ retries × timeout.
 SINGBOX_CHECK_RETRIES="2"
 # Optional explicit proxy for the probe, e.g. "http://127.0.0.1:1080"
 # or "socks5://127.0.0.1:1080". Leave empty to AUTO-DETECT from the
@@ -246,28 +249,38 @@ probe_http() {
     local proxy="$2"
     local timeout="$3"
 
+    # User-Agent: Instagram blocks requests without a UA, so we must
+    # send a plausible one. Also helps with other endpoints that 4xx
+    # unknown clients.
+    local user_agent="Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+
     # ------------------------------------------------------------------
     # Strategy 1: curl (preferred — works correctly with 204 + SOCKS)
     # ------------------------------------------------------------------
-    # Use --fail-with-body to make curl return non-zero on 4xx/5xx
-    # (curl 7.76+; falls back to --fail on older versions).
-    # We also capture the HTTP code as a back-up check.
     if command -v curl >/dev/null 2>&1; then
-        local curl_args="-s -o /dev/null --max-time ${timeout} --connect-timeout ${timeout}"
+        local curl_args="-s -o /dev/null --max-time ${timeout} --connect-timeout ${timeout} -A '${user_agent}'"
         local curl_code
 
         if [ -n "$proxy" ]; then
             # curl handles http://, https://, socks5://, socks5h:// natively
-            curl_code=$(curl $curl_args -w "%{http_code}" \
+            curl_code=$(curl -s -o /dev/null \
+                --max-time "$timeout" \
+                --connect-timeout "$timeout" \
+                -A "$user_agent" \
+                -w "%{http_code}" \
                 --proxy "$proxy" "$url" 2>/dev/null) || curl_code="000"
         else
-            curl_code=$(curl $curl_args -w "%{http_code}" \
+            curl_code=$(curl -s -o /dev/null \
+                --max-time "$timeout" \
+                --connect-timeout "$timeout" \
+                -A "$user_agent" \
+                -w "%{http_code}" \
                 "$url" 2>/dev/null) || curl_code="000"
         fi
 
-        # Treat 2xx and 3xx as success. 3xx is included because some probe
-        # endpoints redirect (e.g., to a CDN), and that still proves
-        # connectivity.
+        # Treat 2xx and 3xx as success. 3xx is included because Instagram
+        # may redirect (e.g. to a login page or regional CDN), and that
+        # still proves the proxy chain works.
         case "$curl_code" in
             2[0-9][0-9]|3[0-9][0-9]) return 0 ;;
             *)                        return 1 ;;
@@ -281,7 +294,6 @@ probe_http() {
     # which prints the HTTP status line to stderr. We grep that line for
     # a 2xx or 3xx status code, ignoring the (potentially bogus) exit
     # code that BusyBox returns for empty-body responses.
-    local wget_args="-q -O /dev/null -S --timeout=${timeout}"
     local wget_output
 
     if [ -n "$proxy" ]; then
@@ -291,13 +303,15 @@ probe_http() {
         # not available, this probe will fail; that is the user's signal
         # to install curl (opkg install curl).
         wget_output=$(http_proxy="$proxy" https_proxy="$proxy" \
-            wget $wget_args "$url" 2>&1)
+            wget -q -O /dev/null -S --timeout="$timeout" \
+            -U "$user_agent" "$url" 2>&1)
     else
-        wget_output=$(wget $wget_args "$url" 2>&1)
+        wget_output=$(wget -q -O /dev/null -S --timeout="$timeout" \
+            -U "$user_agent" "$url" 2>&1)
     fi
 
     # Look for the first HTTP status line and extract the code.
-    # Format: "  HTTP/1.1 204 No Content" (GNU) or "  HTTP/1.1 204" (BusyBox)
+    # Format: "  HTTP/1.1 200 OK" (GNU) or "  HTTP/1.1 200" (BusyBox)
     local code
     code=$(echo "$wget_output" | awk '/HTTP\//{print $2; exit}')
 
@@ -314,9 +328,15 @@ probe_http() {
 #   1. sing-box process is running
 #   2. sing-box config file is syntactically valid (if sing-box binary
 #      and config file are available)
-#   3. connectivity probe through the proxy / TUN reaches a known endpoint
-#      (proxy URL is auto-detected from the sing-box config unless
-#       SINGBOX_CHECK_PROXY is set explicitly)
+#   3. connectivity probe — requests SINGBOX_CHECK_URL (default:
+#      https://instagram.com) through the proxy path auto-detected from
+#      the sing-box config. Instagram is used because it is NOT directly
+#      reachable from Russian/CIS ISPs, so a successful probe proves
+#      traffic is really going through the proxy.
+#      Proxy auto-detection picks (in priority order):
+#        - http/mixed inbound → http://127.0.0.1:<listen_port>
+#        - socks inbound      → socks5://127.0.0.1:<listen_port>
+#        - tun/tproxy inbound → direct request (transparent mode)
 # Returns: 0 if sing-box is considered working, 1 otherwise
 # -----------------------------------------------------------------------------
 check_singbox_working() {
@@ -351,7 +371,12 @@ check_singbox_working() {
     fi
 
     # ------------------------------------------------------------------
-    # Step 3: connectivity probe (multi-URL fallback with retries)
+    # Step 3: connectivity probe — request SINGBOX_CHECK_URL through the
+    #         proxy. Default URL is https://instagram.com, which is NOT
+    #         directly reachable from Russian/CIS ISPs, so a successful
+    #         response proves traffic is really going through the proxy.
+    #         A failed response means the proxy chain is broken and the
+    #         script should fetch new subscription links.
     # ------------------------------------------------------------------
     # Determine probe proxy: explicit override first, otherwise auto-detect
     # from the sing-box config file.
@@ -375,39 +400,28 @@ check_singbox_working() {
         echo "No config to inspect and no explicit proxy — using direct request"
     fi
 
-    # Try each URL in SINGBOX_CHECK_URLS, with up to SINGBOX_CHECK_RETRIES
-    # attempts per URL. The first success makes the whole health check pass.
-    # This guards against:
-    #   - transient network blips
-    #   - one probe endpoint being temporarily blocked / rate-limited
-    #   - BusyBox wget quirks with specific response shapes
+    # Retry the probe up to SINGBOX_CHECK_RETRIES times. A single transient
+    # failure should not trigger a subscription refresh.
     local probe_ok=0
-    local probe_succeeded_url=""
-    local url attempt
-
-    for url in $SINGBOX_CHECK_URLS; do
-        for attempt in $(seq 1 "${SINGBOX_CHECK_RETRIES:-1}"); do
-            if probe_http "$url" "$probe_proxy" "$SINGBOX_CHECK_TIMEOUT"; then
-                probe_ok=1
-                probe_succeeded_url="$url"
-                break 2
-            fi
-            # Brief pause before retry (only if more attempts remain)
-            if [ "$attempt" -lt "${SINGBOX_CHECK_RETRIES:-1}" ]; then
-                sleep 1
-            fi
-        done
+    local attempt
+    for attempt in $(seq 1 "${SINGBOX_CHECK_RETRIES:-1}"); do
+        if probe_http "$SINGBOX_CHECK_URL" "$probe_proxy" "$SINGBOX_CHECK_TIMEOUT"; then
+            probe_ok=1
+            break
+        fi
+        if [ "$attempt" -lt "${SINGBOX_CHECK_RETRIES:-1}" ]; then
+            echo "  probe attempt $attempt/${SINGBOX_CHECK_RETRIES} failed, retrying in 1s..."
+            sleep 1
+        fi
     done
 
     if [ $probe_ok -ne 1 ]; then
-        echo "[FAIL] connectivity probe failed for all URLs:"
-        for url in $SINGBOX_CHECK_URLS; do
-            echo "         - $url"
-        done
+        echo "[FAIL] connectivity probe to $SINGBOX_CHECK_URL failed"
         echo "       (timeout=${SINGBOX_CHECK_TIMEOUT}s, retries=${SINGBOX_CHECK_RETRIES}, proxy='${probe_proxy:-direct}')"
+        echo "       → proxy chain is broken or $SINGBOX_CHECK_URL is unreachable through it"
         return 1
     fi
-    echo "[OK]   connectivity probe succeeded (URL: $probe_succeeded_url)"
+    echo "[OK]   connectivity probe to $SINGBOX_CHECK_URL succeeded"
     echo "=== sing-box is healthy ==="
     return 0
 }
